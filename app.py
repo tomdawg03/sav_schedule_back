@@ -6,6 +6,7 @@ from models.user import db, User
 from routes.auth import auth
 import json
 from datetime import datetime
+import uuid  # Add this at the top of your file
 
 def create_app():
     app = Flask(__name__)
@@ -67,17 +68,31 @@ def create_app():
         return jsonify(region_projects)
 
     @app.route('/projects/<region>', methods=['POST'])
-    def add_project(region):
-        project = request.json
-        print(f"Adding project to {region}: {project}")  # Debug print
-        
+    def create_project(region):
         if region not in projects:
-            projects[region] = []
+            return "Invalid region", 400
         
-        projects[region].append(project)
-        print(f"Updated projects for {region}: {projects[region]}")  # Debug print
+        project_data = request.json
+        # Add a unique ID to the project
+        project_data['id'] = str(uuid.uuid4())
         
-        return jsonify({'message': 'Project added successfully'}), 200
+        projects[region].append(project_data)
+        return jsonify({"message": "Project created successfully", "project": project_data})
+
+    @app.route('/projects/<region>/<project_id>', methods=['GET'])
+    def get_project(region, project_id):
+        for project in projects[region]:
+            if project['id'] == project_id:
+                return jsonify(project)
+        return "Project not found", 404
+
+    @app.route('/projects/<region>/<project_id>', methods=['PUT'])
+    def update_project(region, project_id):
+        for i, project in enumerate(projects[region]):
+            if project['id'] == project_id:
+                projects[region][i] = request.json
+                return jsonify({"message": "Project updated successfully"})
+        return "Project not found", 404
 
     return app
 
