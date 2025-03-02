@@ -43,12 +43,13 @@ def login():
     if user and user.check_password(data['password']):
         login_user(user)
         return jsonify({
-            'message': 'Logged in successfully',
+            'success': True,
             'user': {
+                'id': user.id,
                 'username': user.username,
                 'email': user.email
             }
-        })
+        }), 200
     
     return jsonify({'error': 'Invalid username or password'}), 401
 
