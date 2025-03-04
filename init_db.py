@@ -1,14 +1,10 @@
-from flask import Flask
-from flask_sqlalchemy import SQLAlchemy
-from config import Config
+from app import app, db
 
-app = Flask(__name__)
-app.config.from_object(Config)
-
-db = SQLAlchemy()
-db.init_app(app)
+print("Starting database initialization...")
 
 with app.app_context():
-    from models.user import User  # Import here to avoid circular import
+    print("Dropping all existing tables...")
+    db.drop_all()
+    print("Creating new tables...")
     db.create_all()
     print("Database initialized successfully!") 

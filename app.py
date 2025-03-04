@@ -228,13 +228,14 @@ def import_customers():
         imported_count = 0
         for row in csv_data:
             # Check if customer already exists by phone number
-            existing_customer = Customer.query.filter_by(phone=row.get('phone')).first()
+            existing_customer = Customer.query.filter_by(phone=row.get('Phone')).first()
             if not existing_customer:
                 customer = Customer(
-                    name=row.get('customer_name', ''),
-                    last_name=row.get('last_name', ''),
-                    phone=row.get('phone', ''),
-                    email=row.get('email', '')
+                    name=row.get('Customer', ''),
+                    first_name=row.get('First_Name', ''),
+                    last_name=row.get('Last_Name', ''),
+                    phone=row.get('Phone', ''),
+                    email=row.get('Main_Email', '')
                 )
                 db.session.add(customer)
                 imported_count += 1
@@ -272,6 +273,59 @@ def search_customers():
         } for c in customers])
         
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/import-customers-from-csv', methods=['GET'])
+def import_customers_from_csv():
+    try:
+        csv_path = 'data/cust_list.csv'
+        imported_count = 0
+        updated_count = 0
+        
+        with open(csv_path, 'r', encoding='utf-8') as file:
+            csv_data = csv.DictReader(file)
+            # Print headers to verify what we're reading
+            print(f"CSV Headers: {csv_data.fieldnames}")
+            
+            for row in csv_data:
+                # Print first row to see the data structure
+                if imported_count == 0:
+                    print(f"First row data: {row}")
+                
+                # Check if customer already exists by phone number
+                phone = row.get('Phone', '').strip()  # Remove any whitespace
+                if not phone:  # Skip rows without phone numbers
+                    continue
+                    
+                existing_customer = Customer.query.filter_by(phone=phone).first()
+                
+                if existing_customer:
+                    # Update existing customer
+                    existing_customer.name = row.get('Customer', '')
+                    existing_customer.first_name = row.get('First_Name', '')
+                    existing_customer.last_name = row.get('Last_Name', '')
+                    existing_customer.email = row.get('Main_Email', '')
+                    updated_count += 1
+                else:
+                    # Create new customer
+                    customer = Customer(
+                        name=row.get('Customer', ''),
+                        first_name=row.get('First_Name', ''),
+                        last_name=row.get('Last_Name', ''),
+                        phone=phone,
+                        email=row.get('Main_Email', '')
+                    )
+                    db.session.add(customer)
+                    imported_count += 1
+        
+        db.session.commit()
+        return jsonify({
+            'message': f'Successfully imported {imported_count} new customers and updated {updated_count} existing customers'
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error importing customers: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
