@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 from app import app
 from models import db
 from models.user import User, Role, ROLES
@@ -58,15 +57,3 @@ def init_db():
 
 if __name__ == '__main__':
     init_db() 
-=======
-from app import app, db
-
-print("Starting database initialization...")
-
-with app.app_context():
-    print("Dropping all existing tables...")
-    db.drop_all()
-    print("Creating new tables...")
-    db.create_all()
-    print("Database initialized successfully!") 
->>>>>>> 9e888cc9d22dfe916ed96e30e883c8cbf60cef19
