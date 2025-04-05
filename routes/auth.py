@@ -1,33 +1,55 @@
-from flask import Blueprint, request, jsonify
-<<<<<<< HEAD
+from flask import Blueprint, request, jsonify, redirect, url_for, flash, render_template
 from flask_login import login_user, logout_user, login_required, current_user
-from models.user import User, Role, ROLES
+from models.user import User, Role, ROLES, Invitation
 from models import db
+from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity, verify_jwt_in_request, JWTManager
 import jwt
 from datetime import datetime, timedelta
 from functools import wraps
+from services.email_service import EmailService
 
 auth = Blueprint('auth', __name__)
 
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        token = None
-        if 'Authorization' in request.headers:
-            token = request.headers['Authorization'].split(" ")[1]
-        
-        if not token:
-            return jsonify({'error': 'Token is missing'}), 401
-        
         try:
-            data = jwt.decode(token, 'your-secret-key', algorithms=["HS256"])
-            current_user = User.query.get(data['user_id'])
-        except:
+            # Add debug logging
+            auth_header = request.headers.get('Authorization')
+            print(f"Auth header received: {auth_header}")
+            
+            verify_jwt_in_request()
+            user_id = get_jwt_identity()
+            print(f"JWT identity: {user_id}")
+            
+            # Convert string ID back to integer
+            user_id = int(user_id)
+            current_user = User.query.get(user_id)
+            
+            if not current_user:
+                print(f"No user found for id: {user_id}")
+                return jsonify({'error': 'User not found'}), 401
+                
+            print(f"User found: {current_user.username}")
+            return f(current_user, *args, **kwargs)
+        except Exception as e:
+            print(f"Token validation error: {str(e)}")
             return jsonify({'error': 'Token is invalid'}), 401
             
-        return f(current_user, *args, **kwargs)
-    
     return decorated
+
+def admin_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        verify_jwt_in_request()
+        user_id = get_jwt_identity()
+        current_user = User.query.get(user_id)
+        
+        if not current_user or not current_user.is_admin():
+            return jsonify({'error': 'Admin privileges required'}), 403
+            
+        return fn(*args, **kwargs)
+    return wrapper
 
 @auth.route('/create-admin', methods=['POST'])
 def create_admin():
@@ -65,86 +87,145 @@ def create_admin():
 
     return jsonify({'message': 'Admin user created successfully'}), 201
 
-=======
-from flask_login import login_user, logout_user, login_required
-from models.user import User, db
+@auth.route('/invite', methods=['POST'])
+@admin_required
+def create_invitation(current_user):
+    data = request.get_json()
+    
+    if not all(k in data for k in ['email', 'role']):
+        return jsonify({'error': 'Missing required fields'}), 400
+        
+    if data['role'] not in ROLES:
+        return jsonify({'error': 'Invalid role'}), 400
+        
+    # Check if user already exists
+    if User.query.filter_by(email=data['email']).first():
+        return jsonify({'error': 'User with this email already exists'}), 400
+        
+    # Get or create role
+    role = Role.query.filter_by(name=data['role']).first()
+    if not role:
+        role = Role(
+            name=data['role'],
+            description=ROLES[data['role']]['description'],
+            permissions=ROLES[data['role']]['permissions']
+        )
+        db.session.add(role)
+        db.session.flush()
+    
+    # Create invitation
+    invitation = Invitation(
+        email=data['email'],
+        role=role,
+        expires_in_days=data.get('expires_in_days', 7)
+    )
+    db.session.add(invitation)
+    db.session.commit()
+    
+    # Generate invitation link
+    invite_link = f"{request.host_url}signup?code={invitation.code}"
+    
+    # Send invitation email
+    email_service = EmailService()
+    try:
+        email_service.send_invitation(
+            email=data['email'],
+            invite_link=invite_link,
+            expires_in_days=invitation.expires_at - datetime.utcnow()
+        )
+    except Exception as e:
+        print(f"Error sending invitation email: {str(e)}")
+        # Don't return error here, just log it
+    
+    return jsonify({
+        'message': 'Invitation sent successfully',
+        'invitation': {
+            'code': invitation.code,
+            'email': invitation.email,
+            'role': role.name,
+            'expires_at': invitation.expires_at.isoformat()
+        }
+    })
 
-auth = Blueprint('auth', __name__)
-
->>>>>>> 9e888cc9d22dfe916ed96e30e883c8cbf60cef19
 @auth.route('/signup', methods=['POST'])
 def signup():
-    data = request.get_json()
-    
-    # Validate required fields
-    if not all(k in data for k in ['username', 'email', 'password']):
-        return jsonify({'error': 'Missing required fields'}), 400
-
-    # Check if user already exists
-    if User.query.filter_by(username=data['username']).first():
-        return jsonify({'error': 'Username already exists'}), 400
-    
-    if User.query.filter_by(email=data['email']).first():
-        return jsonify({'error': 'Email already exists'}), 400
-
-    # Create new user
-    user = User(
-        username=data['username'],
-        email=data['email']
-    )
-    user.set_password(data['password'])
-
-    db.session.add(user)
-    db.session.commit()
-
-    return jsonify({'message': 'User created successfully'}), 201
-
-@auth.route('/login', methods=['POST'])
-def login():
-<<<<<<< HEAD
-    # Handle both JSON and form data
-    if request.is_json:
+    try:
         data = request.get_json()
-    else:
-        data = request.form
+        username = data.get('username')
+        email = data.get('email')
+        password = data.get('password')
+        
+        if not all([username, email, password]):
+            return jsonify({'error': 'All fields are required'}), 400
+            
+        # Check if username already exists
+        if User.query.filter_by(username=username).first():
+            return jsonify({'error': 'Username already exists'}), 400
+            
+        # Check if email already exists
+        if User.query.filter_by(email=email).first():
+            return jsonify({'error': 'Email already exists'}), 400
+            
+        # Create or get default viewer role
+        viewer_role = Role.query.filter_by(name='viewer').first()
+        if not viewer_role:
+            viewer_role = Role(
+                name='viewer',
+                description=ROLES['viewer']['description'],
+                permissions=ROLES['viewer']['permissions']
+            )
+            db.session.add(viewer_role)
+            db.session.flush()
+            
+        # Create new user with default role 'viewer'
+        new_user = User(
+            username=username,
+            email=email,
+            role=viewer_role
+        )
+        new_user.set_password(password)
+        
+        db.session.add(new_user)
+        db.session.commit()
+        
+        return jsonify({'message': 'User created successfully'}), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error in signup: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
-    print(f"Login attempt with data: {data}")
-=======
-    data = request.get_json()
->>>>>>> 9e888cc9d22dfe916ed96e30e883c8cbf60cef19
+@auth.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'GET':
+        return render_template('login.html')
+
+    # Get form data
+    username = request.form.get('username')
+    password = request.form.get('password')
+
+    print(f"Login attempt for username: {username}")
     
-    if not all(k in data for k in ['username', 'password']):
+    if not username or not password:
         return jsonify({'error': 'Missing username or password'}), 400
 
-    user = User.query.filter_by(username=data['username']).first()
-
-    if user and user.check_password(data['password']):
+    user = User.query.filter_by(username=username).first()
+    
+    if user and user.check_password(password):
         login_user(user)
-<<<<<<< HEAD
-        
-        # Generate token
-        token = jwt.encode({
-            'user_id': user.id,
-            'exp': datetime.utcnow() + timedelta(days=1)
-        }, 'your-secret-key', algorithm="HS256")
-        
-=======
->>>>>>> 9e888cc9d22dfe916ed96e30e883c8cbf60cef19
+        # Create JWT token with string identity
+        token = create_access_token(identity=str(user.id))
+        print(f"Created token for user {user.username} with ID {user.id}")
         return jsonify({
-            'success': True,
+            'message': 'Login successful',
+            'token': token,
             'user': {
                 'id': user.id,
                 'username': user.username,
-<<<<<<< HEAD
                 'email': user.email,
-                'role': user.role.name if user.role else None,
-                'permissions': user.role.permissions if user.role else 0,
-                'token': token
-=======
-                'email': user.email
->>>>>>> 9e888cc9d22dfe916ed96e30e883c8cbf60cef19
+                'role': user.role.name if user.role else None
             }
-        }), 200
+        })
     
     return jsonify({'error': 'Invalid username or password'}), 401
 
@@ -152,12 +233,15 @@ def login():
 @login_required
 def logout():
     logout_user()
-<<<<<<< HEAD
     return jsonify({'message': 'Logged out successfully'})
 
 @auth.route('/users', methods=['GET'])
-def get_users():
+@token_required
+def get_users(current_user):
     try:
+        if not current_user.is_admin():
+            return jsonify({'error': 'Admin privileges required'}), 403
+            
         users = User.query.all()
         return jsonify([{
             'id': user.id,
@@ -212,7 +296,22 @@ def update_user_role(user_id):
     except Exception as e:
         print(f"Error updating user role: {str(e)}")
         db.session.rollback()
-        return jsonify({'error': 'Failed to update user role'}), 500 
-=======
-    return jsonify({'message': 'Logged out successfully'}) 
->>>>>>> 9e888cc9d22dfe916ed96e30e883c8cbf60cef19
+        return jsonify({'error': 'Failed to update user role'}), 500
+
+@auth.route('/validate', methods=['GET'])
+@token_required
+def validate_token(current_user):
+    try:
+        print(f"Validating token for user: {current_user.username}")
+        return jsonify({
+            'valid': True,
+            'user': {
+                'id': current_user.id,
+                'username': current_user.username,
+                'email': current_user.email,
+                'role': current_user.role.name if current_user.role else None
+            }
+        })
+    except Exception as e:
+        print(f"Error in validate_token: {str(e)}")
+        return jsonify({'error': str(e)}), 500

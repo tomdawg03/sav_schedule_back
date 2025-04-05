@@ -1,12 +1,12 @@
-<<<<<<< HEAD
 import os
 from dotenv import load_dotenv
+from datetime import timedelta
 
 load_dotenv()
 
 class Config:
-    SECRET_KEY = os.environ.get('SECRET_KEY', 'your-secret-key-here')
-    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL', 'sqlite:///savage.db')
+    SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev'
+    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL') or 'sqlite:///app.db'
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     
     # Twilio configuration
@@ -16,12 +16,9 @@ class Config:
     
     # SendGrid configuration
     SENDGRID_API_KEY = os.environ.get('SENDGRID_API_KEY')
-=======
-class Config:
-    SECRET_KEY = 'your-secret-key-here'  # Change this in production!
-    SQLALCHEMY_DATABASE_URI = 'sqlite:///savage.db'
-    SQLALCHEMY_TRACK_MODIFICATIONS = False
-    TWILIO_ACCOUNT_SID = 'MG3428ae50f09a945d50ef730154165533'
-    TWILIO_AUTH_TOKEN = '9c0e4a7a407ea1bc989c4a88168a495b'
-    TWILIO_PHONE_NUMBER = '+18338631177'
->>>>>>> 9e888cc9d22dfe916ed96e30e883c8cbf60cef19
+
+    JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY') or 'jwt-secret-key'
+    JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=1)
+    JWT_TOKEN_LOCATION = ['headers']
+    JWT_HEADER_NAME = 'Authorization'
+    JWT_HEADER_TYPE = 'Bearer'

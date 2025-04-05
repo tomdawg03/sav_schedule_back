@@ -23,9 +23,14 @@ class EmailService:
         try:
             print(f"Preparing to send confirmation email to {customer_email}")
             
+            # Format work types and job cost types
+            def format_type(type_str):
+                # Replace underscores with spaces and capitalize each word
+                return type_str.replace('_', ' ').title()
+            
             # Format lists for display
-            job_cost_types_display = ", ".join(job_cost_type) if isinstance(job_cost_type, list) else str(job_cost_type) if job_cost_type else "Not specified"
-            work_types_display = ", ".join(work_type) if isinstance(work_type, list) else str(work_type) if work_type else "Not specified"
+            job_cost_types_display = ", ".join(format_type(t) for t in job_cost_type) if isinstance(job_cost_type, list) else "Not specified"
+            work_types_display = ", ".join(format_type(t) for t in work_type) if isinstance(work_type, list) else "Not specified"
             
             data = {
                 "personalizations": [

@@ -1,5 +1,5 @@
-from flask import Flask, request, jsonify
-from flask_login import LoginManager, current_user, login_required
+from flask import Flask, request, jsonify, render_template, send_file, redirect, url_for, session
+from flask_login import LoginManager, current_user, login_required, login_user, logout_user
 from flask_cors import CORS
 from config import Config
 from models import db, init_app
@@ -10,30 +10,62 @@ from routes.projects import projects_bp
 from models.customer import Customer
 from services.sms_service import SMSService
 from services.email_service import EmailService
+from flask_jwt_extended import JWTManager
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 import uuid
 from models.project import Project
 import csv
 from io import StringIO
+import os
+from dotenv import load_dotenv
+from routes.analytics import analytics
+from services.csv_service import import_customers_from_csv
+import requests
 
-app = Flask(__name__)
+# Load environment variables from .env file
+load_dotenv()
+
+# Create data directory if it doesn't exist
+data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'data'))
+if not os.path.exists(data_dir):
+    os.makedirs(data_dir)
+    print(f"Created data directory at: {data_dir}")
+
+# Initialize Flask app
+app = Flask(__name__, 
+           template_folder='../sav_schedule_front/templates',
+           static_folder='../sav_schedule_front/static',
+           static_url_path='/static')
 app.config.from_object(Config)
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///scheduler.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# Initialize extensions
-CORS(app, supports_credentials=True, resources={
+# Initialize JWT with additional configuration
+jwt = JWTManager(app)
+app.config['JWT_TOKEN_LOCATION'] = ['headers']
+app.config['JWT_HEADER_NAME'] = 'Authorization'
+app.config['JWT_HEADER_TYPE'] = 'Bearer'
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=1)
+
+# Initialize CORS with support for credentials
+CORS(app, resources={
     r"/*": {
-        "origins": ["http://localhost:5000"],
+        "origins": ["http://127.0.0.1:5000", "http://localhost:5000"],
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         "allow_headers": ["Content-Type", "Authorization"],
-        "supports_credentials": True
+        "supports_credentials": True,
+        "allow_credentials": True
     }
 })
-init_app(app)
+
+# Initialize database
+db.init_app(app)
 
 # Initialize Login Manager
 login_manager = LoginManager()
 login_manager.init_app(app)
+login_manager.login_view = 'auth.login'
 
 @login_manager.user_loader
 def load_user(user_id):
@@ -41,8 +73,131 @@ def load_user(user_id):
 
 # Register blueprints
 app.register_blueprint(auth, url_prefix='/auth')
-app.register_blueprint(user_management, url_prefix='/user-management')
-app.register_blueprint(projects_bp, url_prefix='/api/projects')
+app.register_blueprint(analytics, url_prefix='/analytics')
+app.register_blueprint(projects_bp, url_prefix='/projects')
+app.register_blueprint(user_management, url_prefix='/auth')  # Add auth prefix
+
+def init_database():
+    """Initialize the database with required tables and initial data."""
+    with app.app_context():
+        # Create all tables
+        print("Creating database tables...")
+        db.create_all()
+
+        # Initialize roles
+        print("Initializing roles...")
+        for role_name, role_data in ROLES.items():
+            try:
+                role = Role.query.filter_by(name=role_name).first()
+                if not role:
+                    print(f"Creating role: {role_name}")
+                    role = Role(
+                        name=role_name,
+                        description=role_data['description'],
+                        permissions=role_data['permissions']
+                    )
+                    db.session.add(role)
+                    db.session.commit()
+            except Exception as e:
+                db.session.rollback()
+                print(f"Error creating role {role_name}: {str(e)}")
+                raise
+
+        # Import customers if CSV exists
+        csv_path = os.path.join(data_dir, 'cust_list.csv')
+        if os.path.exists(csv_path):
+            print("Importing customers from CSV...")
+            try:
+                with open(csv_path, 'r') as file:
+                    csv_reader = csv.DictReader(file)
+                    imported_count = 0
+                    for row in csv_reader:
+                        try:
+                            name = row.get('Customer', '').strip()
+                            if not name:
+                                name = f"{row.get('First_Name', '')} {row.get('Last_Name', '')}".strip()
+                            
+                            if name and row.get('Phone'):
+                                customer = Customer(
+                                    name=name,
+                                    phone=row.get('Phone'),
+                                    email=row.get('Main_Email', '')
+                                )
+                                db.session.add(customer)
+                                imported_count += 1
+                        except Exception as e:
+                            print(f"Error importing customer: {str(e)}")
+                            continue
+                    
+                    db.session.commit()
+                    print(f"Successfully imported {imported_count} customers")
+            except Exception as e:
+                db.session.rollback()
+                print(f"Error during customer import: {str(e)}")
+        else:
+            print(f"Customer CSV file not found at {csv_path}")
+
+# Initialize database
+init_database()
+
+@app.route('/')
+def index():
+    if current_user.is_authenticated:
+        return redirect(url_for('dashboard'))
+    return redirect(url_for('auth.login'))
+
+@app.route('/login')
+def login_redirect():
+    return redirect(url_for('auth.login'))
+
+@app.route('/dashboard')
+@login_required
+def dashboard():
+    return render_template('dashboard.html', 
+                        username=current_user.username,
+                        role=current_user.role.name if current_user.role else None)
+
+@app.route('/calendar/<region>')
+@login_required
+def calendar(region):
+    try:
+        # Get projects for this region
+        projects = Project.query.filter_by(region=region).all()
+        
+        # Format projects for the calendar
+        projects_list = []
+        for project in projects:
+            customer = Customer.query.get(project.customer_id)
+            project_data = {
+                'id': project.id,
+                'date': project.date.strftime('%Y-%m-%d'),
+                'customer_name': customer.name if customer else 'Unknown',
+                'address': project.address,
+                'city': project.city,
+                'work_type': project.work_type.split(',') if project.work_type else [],
+                'job_cost_type': project.job_cost_type.split(',') if project.job_cost_type else []
+            }
+            projects_list.append(project_data)
+        
+        # Convert to JSON for the template
+        projects_json = json.dumps(projects_list)
+        
+        return render_template('calendar.html',
+                            region=region,
+                            username=current_user.username,
+                            role=current_user.role.name if current_user.role else None,
+                            projects=projects_list,
+                            projects_json=projects_json)
+    except Exception as e:
+        print(f"Exception in calendar route: {str(e)}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
+        return render_template('calendar.html',
+                            region=region,
+                            username=current_user.username,
+                            role=current_user.role.name if current_user.role else None,
+                            projects=[],
+                            projects_json='[]')
 
 @app.route('/import-customers', methods=['POST'])
 def import_customers():
@@ -85,7 +240,10 @@ def import_customers():
 def search_customers():
     try:
         search_term = request.args.get('q', '')
+        print(f"Received search request with term: {search_term}")
+        
         if not search_term:
+            print("No search term provided, returning empty list")
             return jsonify([])
         
         # Search by name, phone, or email
@@ -97,14 +255,21 @@ def search_customers():
             )
         ).limit(10).all()
         
-        return jsonify([{
+        print(f"Found {len(customers)} matching customers")
+        result = [{
             'id': c.id,
             'name': c.name,
             'phone': c.phone,
             'email': c.email
-        } for c in customers])
+        } for c in customers]
+        print(f"Returning results: {result}")
+        return jsonify(result)
         
     except Exception as e:
+        print(f"Error in search_customers: {str(e)}")
+        print(f"Error type: {type(e).__name__}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 @app.route('/import-customers-from-csv', methods=['GET'])
@@ -160,61 +325,41 @@ def import_customers_from_csv():
         print(f"Error importing customers: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-# Create database tables and initialize roles
-with app.app_context():
-    print("Creating database tables...")
-    db.create_all()
+@app.route('/confirmation/<region>', methods=['GET'])
+def confirmation(region):
+    if 'user' not in session:
+        return redirect(url_for('auth.login'))
     
-    # Initialize roles if they don't exist
-    for role_name, role_data in ROLES.items():
-        role = Role.query.filter_by(name=role_name).first()
-        if not role:
-            role = Role(
-                name=role_name,
-                description=role_data['description'],
-                permissions=role_data['permissions']
-            )
-            db.session.add(role)
-    
-    # Delete all existing customers and import fresh from CSV
     try:
-        print("Deleting existing customers...")
-        Customer.query.delete()
-        db.session.commit()
-        print("Importing customers from CSV...")
-        with open('data/cust_list.csv', 'r') as file:
-            csv_reader = csv.DictReader(file)
-            imported_count = 0
-            for row in csv_reader:
-                # Use company name if available, otherwise combine first and last name
-                name = row['Customer'] if row['Customer'] else f"{row['First_Name']} {row['Last_Name']}".strip()
-                customer = Customer(
-                    name=name,
-                    phone=row['Phone'],
-                    email=row['Main_Email']
-                )
-                db.session.add(customer)
-                imported_count += 1
+        # Get the most recently created project from the backend
+        response = requests.get(
+            f'{BACKEND_URL}/projects/{region}/latest',
+            headers={'Authorization': f"Bearer {session['user']['token']}"}
+        )
+        
+        if response.ok:
+            project_data = response.json()
+            return render_template('confirmation.html', project=project_data, region=region)
+        else:
+            return redirect(url_for('create_project', region=region))
             
-            db.session.commit()
-            print(f"Successfully imported {imported_count} customers from cust_list.csv")
-            
-            # Verify the import
-            final_count = Customer.query.count()
-            print(f"Final customer count in database: {final_count}")
-            
-            # Print first few customers as sample
-            sample_customers = Customer.query.limit(5).all()
-            print("Sample of imported customers:")
-            for c in sample_customers:
-                print(f"- {c.name} ({c.phone})")
     except Exception as e:
-        print(f"Error importing customers from CSV: {str(e)}")
-        print(f"Error details: {type(e).__name__}")
-        import traceback
-        traceback.print_exc()
-    
-    db.session.commit()
+        print(f"Error in confirmation route: {str(e)}")
+        return redirect(url_for('create_project', region=region))
+
+@app.route('/create-project/<region>', methods=['GET', 'POST'])
+@login_required
+def create_project(region):
+    if 'user' not in session:
+        return redirect(url_for('auth.login'))
+    return render_template('create_project.html', region=region)
+
+@app.route('/analytics')
+@login_required
+def analytics_page():
+    if not current_user.is_admin():
+        return redirect(url_for('dashboard'))
+    return render_template('analytics.html')
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001, debug=True)
