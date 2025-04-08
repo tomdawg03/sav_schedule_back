@@ -7,8 +7,12 @@ import jwt
 from datetime import datetime, timedelta
 from functools import wraps
 from services.email_service import EmailService
+import os
 
 auth = Blueprint('auth', __name__)
+
+# List of valid signup codes - you can modify these as needed
+VALID_SIGNUP_CODES = ['SAVAGE2024']  # Single code for simplicity
 
 def token_required(f):
     @wraps(f)
@@ -151,13 +155,20 @@ def create_invitation(current_user):
 def signup():
     try:
         data = request.get_json()
-        username = data.get('username')
-        email = data.get('email')
-        password = data.get('password')
         
-        if not all([username, email, password]):
-            return jsonify({'error': 'All fields are required'}), 400
+        # Check if all required fields are present
+        required_fields = ['username', 'password', 'email', 'signup_code']
+        if not all(field in data for field in required_fields):
+            return jsonify({'error': 'Missing required fields'}), 400
             
+        # Validate signup code
+        if data['signup_code'] not in VALID_SIGNUP_CODES:
+            return jsonify({'error': 'Invalid signup code'}), 400
+            
+        username = data['username']
+        password = data['password']
+        email = data['email']
+        
         # Check if username already exists
         if User.query.filter_by(username=username).first():
             return jsonify({'error': 'Username already exists'}), 400
@@ -166,7 +177,7 @@ def signup():
         if User.query.filter_by(email=email).first():
             return jsonify({'error': 'Email already exists'}), 400
             
-        # Create or get default viewer role
+        # Get or create viewer role
         viewer_role = Role.query.filter_by(name='viewer').first()
         if not viewer_role:
             viewer_role = Role(
@@ -177,11 +188,11 @@ def signup():
             db.session.add(viewer_role)
             db.session.flush()
             
-        # Create new user with default role 'viewer'
+        # Create new user with viewer role
         new_user = User(
             username=username,
             email=email,
-            role=viewer_role
+            role=viewer_role  # Set role to viewer
         )
         new_user.set_password(password)
         
@@ -191,9 +202,8 @@ def signup():
         return jsonify({'message': 'User created successfully'}), 201
         
     except Exception as e:
-        db.session.rollback()
         print(f"Error in signup: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Internal server error'}), 500
 
 @auth.route('/login', methods=['GET', 'POST'])
 def login():
@@ -314,4 +324,51 @@ def validate_token(current_user):
         })
     except Exception as e:
         print(f"Error in validate_token: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@auth.route('/user/<int:user_id>', methods=['PUT'])
+@token_required
+def update_user(current_user, user_id):
+    try:
+        if not current_user.is_admin():
+            return jsonify({'error': 'Admin privileges required'}), 403
+            
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+            
+        user = User.query.get(user_id)
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+            
+        # Check if username is being changed and is not taken
+        if 'username' in data and data['username'] != user.username:
+            if User.query.filter_by(username=data['username']).first():
+                return jsonify({'error': 'Username already exists'}), 400
+            user.username = data['username']
+            
+        # Check if email is being changed and is not taken
+        if 'email' in data and data['email'] != user.email:
+            if User.query.filter_by(email=data['email']).first():
+                return jsonify({'error': 'Email already exists'}), 400
+            user.email = data['email']
+            
+        # Update password if provided
+        if 'password' in data:
+            user.set_password(data['password'])
+            
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'User updated successfully',
+            'user': {
+                'id': user.id,
+                'username': user.username,
+                'email': user.email,
+                'role': user.role.name if user.role else None
+            }
+        }), 200
+    except Exception as e:
+        print(f"Error updating user: {str(e)}")
+        db.session.rollback()
         return jsonify({'error': str(e)}), 500

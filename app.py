@@ -10,6 +10,7 @@ from routes.projects import projects_bp
 from models.customer import Customer
 from services.sms_service import SMSService
 from services.email_service import EmailService
+from services.scheduler_service import SchedulerService
 from flask_jwt_extended import JWTManager
 import json
 from datetime import datetime, timedelta
@@ -22,6 +23,7 @@ from dotenv import load_dotenv
 from routes.analytics import analytics
 from services.csv_service import import_customers_from_csv
 import requests
+import atexit
 
 # Load environment variables from .env file
 load_dotenv()
@@ -139,6 +141,14 @@ def init_database():
 
 # Initialize database
 init_database()
+
+# Initialize scheduler service
+scheduler_service = SchedulerService(app)
+
+# Register shutdown function
+@atexit.register
+def shutdown_scheduler():
+    scheduler_service.shutdown()
 
 @app.route('/')
 def index():

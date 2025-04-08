@@ -314,15 +314,30 @@ def update_project(current_user, region, project_id):
             print(f"Error updating project details: {str(e)}")
             return jsonify({"error": f"Error updating project details: {str(e)}"}), 500
 
-        # Update customer details
+        # Handle customer updates
         try:
-            customer = Customer.query.get(project.customer_id)
-            if customer:
-                customer.name = project_data['customer_name']
-                customer.phone = project_data['customer_phone']
-                if project_data.get('customer_email'):
-                    customer.email = project_data['customer_email']
-                print(f"Updated customer details for {customer.name}")
+            current_customer = Customer.query.get(project.customer_id)
+            
+            # If customer name or phone has changed, create a new customer
+            if (current_customer.name != project_data['customer_name'] or 
+                current_customer.phone != project_data['customer_phone']):
+                print(f"Customer details changed, creating new customer record")
+                new_customer = Customer(
+                    name=project_data['customer_name'],
+                    phone=project_data['customer_phone'],
+                    email=project_data.get('customer_email')
+                )
+                db.session.add(new_customer)
+                db.session.flush()  # Get the new customer ID
+                project.customer_id = new_customer.id
+                customer = new_customer
+            else:
+                # Only update email if it changed
+                if project_data.get('customer_email') and project_data['customer_email'] != current_customer.email:
+                    current_customer.email = project_data['customer_email']
+                customer = current_customer
+                
+            print(f"Updated customer details for project {project_id}")
         except KeyError as e:
             print(f"Missing required customer field: {str(e)}")
             return jsonify({"error": f"Missing required customer field: {str(e)}"}), 400
@@ -339,7 +354,17 @@ def update_project(current_user, region, project_id):
                     customer_email=customer.email,
                     customer_name=customer.name,
                     project_date=project_data['date'],
-                    address=project_data['address']
+                    address=project_data['address'],
+                    customer_phone=customer.phone,
+                    po=project_data.get('po'),
+                    city=project_data.get('city'),
+                    subdivision=project_data.get('subdivision'),
+                    lot_number=project_data.get('lot_number'),
+                    square_footage=project_data.get('square_footage'),
+                    job_cost_type=project_data.get('job_cost_type', []),
+                    work_type=project_data.get('work_type', []),
+                    notes=project_data.get('notes'),
+                    region=region
                 )
                 print("Update email sent successfully")
             except Exception as e:
@@ -364,9 +389,9 @@ def update_project(current_user, region, project_id):
                     "id": project.id,
                     "date": project.date.strftime('%Y-%m-%d'),
                     "po": project.po,
-                    "customer_name": customer.name if customer else "Unknown",
-                    "customer_phone": customer.phone if customer else None,
-                    "customer_email": customer.email if customer else None,
+                    "customer_name": customer.name,
+                    "customer_phone": customer.phone,
+                    "customer_email": customer.email,
                     "address": project.address,
                     "city": project.city,
                     "subdivision": project.subdivision,
